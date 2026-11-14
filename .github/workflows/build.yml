@@ -21,6 +21,13 @@ jobs:
           mkdir -p app/src/main/java/com/example/settingsbookmarker
           mkdir -p app/src/main/res/xml
 
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          android.nonTransitiveRClass=true
+          EOF
+
           cat << 'EOF' > settings.gradle.kts
           pluginManagement {
               repositories {
@@ -65,14 +72,6 @@ jobs:
                   versionName = "1.0"
               }
 
-              buildFeatures {
-                  compose = true
-              }
-
-              composeOptions {
-                  kotlinCompilerExtensionVersion = "1.5.10"
-              }
-
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
                   targetCompatibility = JavaVersion.VERSION_17
@@ -84,17 +83,13 @@ jobs:
           }
 
           dependencies {
-              implementation(platform("androidx.compose:compose-bom:2024.02.00"))
-              implementation("androidx.activity:activity-compose:1.8.2")
-              implementation("androidx.compose.ui:ui")
-              implementation("androidx.compose.material3:material3")
+              // Zero external dependencies needed! Uses built-in Android SDK for 100% reliable builds.
           }
           EOF
 
           cat << 'EOF' > app/src/main/AndroidManifest.xml
           <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="com.example.settingsbookmarker">
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
               <uses-permission android:name="com.android.launcher.permission.INSTALL_SHORTCUT" />
               <uses-permission android:name="android.permission.WRITE_SETTINGS" />
@@ -103,7 +98,7 @@ jobs:
                   android:allowBackup="true"
                   android:label="Settings Bookmarker"
                   android:supportsRtl="true"
-                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  android:theme="@android:style/Theme.DeviceDefault.Light.DarkActionBar">
 
                   <activity
                       android:name=".MainActivity"
@@ -210,26 +205,20 @@ jobs:
           cat << 'EOF' > app/src/main/java/com/example/settingsbookmarker/MainActivity.kt
           package com.example.settingsbookmarker
 
+          import android.app.Activity
           import android.app.PendingIntent
           import android.content.Context
           import android.content.Intent
           import android.content.pm.ShortcutInfo
           import android.content.pm.ShortcutManager
+          import android.graphics.Color
+          import android.graphics.Typeface
           import android.graphics.drawable.Icon
           import android.os.Build
           import android.os.Bundle
           import android.provider.Settings
-          import android.widget.Toast
-          import androidx.activity.ComponentActivity
-          import androidx.activity.compose.setContent
-          import androidx.compose.foundation.layout.*
-          import androidx.compose.foundation.lazy.LazyColumn
-          import androidx.compose.foundation.lazy.items
-          import androidx.compose.material3.*
-          import androidx.compose.runtime.*
-          import androidx.compose.ui.Modifier
-          import androidx.compose.ui.platform.LocalContext
-          import androidx.compose.ui.unit.dp
+          import android.view.Gravity
+          import android.widget.*
 
           data class SettingBookmark(
               val id: String,
@@ -238,7 +227,17 @@ jobs:
               val subSteps: List<String> = emptyList()
           )
 
-          class MainActivity : ComponentActivity() {
+          class MainActivity : Activity() {
+
+              private val bookmarks = mutableListOf(
+                  SettingBookmark("display_direct", "Display Settings (Direct)", Settings.ACTION_DISPLAY_SETTINGS),
+                  SettingBookmark("refresh_rate_deep", "Refresh Rate (Deep Step)", Settings.ACTION_DISPLAY_SETTINGS, listOf("Smooth Display")),
+                  SettingBookmark("dev_options", "Developer Options", Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
+                  SettingBookmark("battery_saver", "Battery Saver", Settings.ACTION_BATTERY_SAVER_SETTINGS),
+                  SettingBookmark("wifi_settings", "Wi-Fi Settings", Settings.ACTION_WIFI_SETTINGS)
+              )
+
+              private lateinit var listContainer: LinearLayout
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
@@ -253,178 +252,176 @@ jobs:
                       return
                   }
 
-                  setContent {
-                      MaterialTheme {
-                          Surface(modifier = Modifier.fillMaxSize()) {
-                              BookmarkScreen()
-                          }
+                  loadCustomBookmarks()
+
+                  val scrollView = ScrollView(this)
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(40, 40, 40, 40)
+                  }
+                  scrollView.addView(root)
+
+                  val accessBtn = Button(this).apply {
+                      text = "1. Enable Accessibility (For Deep Steps)"
+                      setOnClickListener {
+                          startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                       }
                   }
-              }
-          }
+                  root.addView(accessBtn)
 
-          fun executeBookmark(context: Context, baseAction: String, subSteps: List<String>) {
-              SettingsNavigatorService.clickQueue.clear()
-              SettingsNavigatorService.clickQueue.addAll(subSteps)
-
-              val intent = Intent(baseAction).apply {
-                  flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-              }
-              try {
-                  context.startActivity(intent)
-              } catch (e: Exception) {
-                  Toast.makeText(context, "Setting not supported on this device", Toast.LENGTH_SHORT).show()
-              }
-          }
-
-          fun pinBookmarkToHomeScreen(context: Context, bookmark: SettingBookmark) {
-              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                  val shortcutManager = context.getSystemService(ShortcutManager::class.java)
-                  if (shortcutManager != null && shortcutManager.isRequestPinShortcutSupported) {
-                      val shortcutIntent = Intent(context, MainActivity::class.java).apply {
-                          action = "com.example.settingsbookmarker.OPEN_BOOKMARK"
-                          putExtra("BASE_ACTION", bookmark.baseAction)
-                          putExtra("SUB_STEPS", bookmark.subSteps.joinToString("|"))
-                      }
-
-                      val shortcutInfo = ShortcutInfo.Builder(context, bookmark.id)
-                          .setShortLabel(bookmark.title)
-                          .setLongLabel("Open ${bookmark.title}")
-                          .setIcon(Icon.createWithResource(context, android.R.drawable.ic_menu_preferences))
-                          .setIntent(shortcutIntent)
-                          .build()
-
-                      val pinnedShortcutCallbackIntent = shortcutManager.createShortcutResultIntent(shortcutInfo)
-                      val successCallback = PendingIntent.getBroadcast(
-                          context, 0, pinnedShortcutCallbackIntent, PendingIntent.FLAG_IMMUTABLE
-                      )
-
-                      shortcutManager.requestPinShortcut(shortcutInfo, successCallback.intentSender)
+                  val titleInput = EditText(this).apply {
+                      hint = "Bookmark Name (e.g., Dark Mode Schedule)"
                   }
-              }
-          }
+                  root.addView(titleInput)
 
-          @Composable
-          fun BookmarkScreen() {
-              val context = LocalContext.current
-
-              val bookmarks = remember {
-                  mutableStateListOf(
-                      SettingBookmark(
-                          id = "display_direct",
-                          title = "Display Settings (Direct)",
-                          baseAction = Settings.ACTION_DISPLAY_SETTINGS
-                      ),
-                      SettingBookmark(
-                          id = "refresh_rate_deep",
-                          title = "Screen Refresh Rate (Deep Step)",
-                          baseAction = Settings.ACTION_DISPLAY_SETTINGS,
-                          subSteps = listOf("Smooth Display")
-                      ),
-                      SettingBookmark(
-                          id = "dev_options",
-                          title = "Developer Options",
-                          baseAction = Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS
-                      ),
-                      SettingBookmark(
-                          id = "battery_saver",
-                          title = "Battery Saver",
-                          baseAction = Settings.ACTION_BATTERY_SAVER_SETTINGS
-                      ),
-                      SettingBookmark(
-                          id = "wifi_settings",
-                          title = "Wi-Fi Settings",
-                          baseAction = Settings.ACTION_WIFI_SETTINGS
-                      )
-                  )
-              }
-
-              var customTitle by remember { mutableStateOf("") }
-              var customStep by remember { mutableStateOf("") }
-
-              Column(modifier = Modifier.padding(16.dp)) {
-                  Text("Settings Bookmarker", style = MaterialTheme.typography.headlineSmall)
-                  Spacer(modifier = Modifier.height(8.dp))
-
-                  Button(
-                      onClick = {
-                          context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                      },
-                      modifier = Modifier.fillMaxWidth()
-                  ) {
-                      Text("1. Enable Accessibility Service (For Deep Steps)")
+                  val stepsInput = EditText(this).apply {
+                      hint = "Exact Menu Text to Click (e.g., Dark theme, Schedule)"
                   }
+                  root.addView(stepsInput)
 
-                  Spacer(modifier = Modifier.height(12.dp))
-
-                  OutlinedTextField(
-                      value = customTitle,
-                      onValueChange = { customTitle = it },
-                      label = { Text("Bookmark Name (e.g., Dark Mode Schedule)") },
-                      modifier = Modifier.fillMaxWidth()
-                  )
-                  Spacer(modifier = Modifier.height(8.dp))
-                  OutlinedTextField(
-                      value = customStep,
-                      onValueChange = { customStep = it },
-                      label = { Text("Exact Menu Text to Auto-Click (comma separated)") },
-                      placeholder = { Text("e.g., Dark theme, Schedule") },
-                      modifier = Modifier.fillMaxWidth()
-                  )
-                  Spacer(modifier = Modifier.height(8.dp))
-                  Button(
-                      onClick = {
-                          if (customTitle.isNotBlank() && customStep.isNotBlank()) {
-                              bookmarks.add(
-                                  SettingBookmark(
-                                      id = "custom_${System.currentTimeMillis()}",
-                                      title = customTitle,
-                                      baseAction = Settings.ACTION_DISPLAY_SETTINGS,
-                                      subSteps = customStep.split(",").map { it.trim() }
-                                  )
+                  val addBtn = Button(this).apply {
+                      text = "Add Custom Display Sub-Setting Bookmark"
+                      setOnClickListener {
+                          val t = titleInput.text.toString().trim()
+                          val s = stepsInput.text.toString().trim()
+                          if (t.isNotEmpty() && s.isNotEmpty()) {
+                              val newBm = SettingBookmark(
+                                  id = "custom_${System.currentTimeMillis()}",
+                                  title = t,
+                                  baseAction = Settings.ACTION_DISPLAY_SETTINGS,
+                                  subSteps = s.split(",").map { it.trim() }
                               )
-                              customTitle = ""
-                              customStep = ""
+                              bookmarks.add(newBm)
+                              saveCustomBookmark(newBm)
+                              titleInput.setText("")
+                              stepsInput.setText("")
+                              refreshList()
                           }
-                      },
-                      modifier = Modifier.fillMaxWidth()
-                  ) {
-                      Text("Add Custom Display Sub-Setting Bookmark")
+                      }
                   }
+                  root.addView(addBtn)
 
-                  Spacer(modifier = Modifier.height(16.dp))
-                  Text("Saved Bookmarks:", style = MaterialTheme.typography.titleMedium)
+                  listContainer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(0, 30, 0, 0)
+                  }
+                  root.addView(listContainer)
 
-                  LazyColumn(modifier = Modifier.fillMaxSize()) {
-                      items(bookmarks) { item ->
-                          Card(
-                              modifier = Modifier
-                                  .fillMaxWidth()
-                                  .padding(vertical = 6.dp)
-                          ) {
-                              Column(modifier = Modifier.padding(12.dp)) {
-                                  Text(item.title, style = MaterialTheme.typography.titleMedium)
-                                  if (item.subSteps.isNotEmpty()) {
-                                      Text(
-                                          "Auto-clicks: ${item.subSteps.joinToString(" -> ")}",
-                                          style = MaterialTheme.typography.bodySmall
-                                      )
-                                  }
-                                  Spacer(modifier = Modifier.height(8.dp))
-                                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                      Button(onClick = {
-                                          executeBookmark(context, item.baseAction, item.subSteps)
-                                      }) {
-                                          Text("Open Now")
-                                      }
-                                      OutlinedButton(onClick = {
-                                          pinBookmarkToHomeScreen(context, item)
-                                      }) {
-                                          Text("Pin to Home")
-                                      }
-                                  }
-                              }
+                  refreshList()
+                  setContentView(scrollView)
+              }
+
+              private fun refreshList() {
+                  listContainer.removeAllViews()
+                  for (item in bookmarks) {
+                      val card = LinearLayout(this).apply {
+                          orientation = LinearLayout.VERTICAL
+                          setPadding(30, 30, 30, 30)
+                          setBackgroundColor(Color.parseColor("#F2F2F7"))
+                          val params = LinearLayout.LayoutParams(
+                              LinearLayout.LayoutParams.MATCH_PARENT,
+                              LinearLayout.LayoutParams.WRAP_CONTENT
+                          )
+                          params.setMargins(0, 0, 0, 24)
+                          layoutParams = params
+                      }
+
+                      val titleView = TextView(this).apply {
+                          text = item.title
+                          textSize = 18f
+                          setTypeface(null, Typeface.BOLD)
+                          setTextColor(Color.BLACK)
+                      }
+                      card.addView(titleView)
+
+                      if (item.subSteps.isNotEmpty()) {
+                          val subView = TextView(this).apply {
+                              text = "Auto-clicks: ${item.subSteps.joinToString(" -> ")}"
+                              textSize = 14f
+                              setTextColor(Color.DKGRAY)
                           }
+                          card.addView(subView)
+                      }
+
+                      val btnRow = LinearLayout(this).apply {
+                          orientation = LinearLayout.HORIZONTAL
+                          gravity = Gravity.START
+                      }
+
+                      val openBtn = Button(this).apply {
+                          text = "Open Now"
+                          setOnClickListener {
+                              executeBookmark(this@MainActivity, item.baseAction, item.subSteps)
+                          }
+                      }
+                      btnRow.addView(openBtn)
+
+                      val pinBtn = Button(this).apply {
+                          text = "Pin to Home"
+                          setOnClickListener {
+                              pinBookmarkToHomeScreen(this@MainActivity, item)
+                          }
+                      }
+                      btnRow.addView(pinBtn)
+
+                      card.addView(btnRow)
+                      listContainer.addView(card)
+                  }
+              }
+
+              private fun saveCustomBookmark(bm: SettingBookmark) {
+                  val prefs = getSharedPreferences("bookmarks", Context.MODE_PRIVATE)
+                  val existing = prefs.getStringSet("custom_list", mutableSetOf())?.toMutableSet() ?: mutableSetOf()
+                  existing.add("${bm.id};;${bm.title};;${bm.baseAction};;${bm.subSteps.joinToString("|")}")
+                  prefs.edit().putStringSet("custom_list", existing).apply()
+              }
+
+              private fun loadCustomBookmarks() {
+                  val prefs = getSharedPreferences("bookmarks", Context.MODE_PRIVATE)
+                  val existing = prefs.getStringSet("custom_list", emptySet()) ?: emptySet()
+                  for (entry in existing) {
+                      val parts = entry.split(";;")
+                      if (parts.size == 4) {
+                          val steps = if (parts[3].isNotEmpty()) parts[3].split("|") else emptyList()
+                          bookmarks.add(SettingBookmark(parts[0], parts[1], parts[2], steps))
+                      }
+                  }
+              }
+
+              private fun executeBookmark(context: Context, baseAction: String, subSteps: List<String>) {
+                  SettingsNavigatorService.clickQueue.clear()
+                  SettingsNavigatorService.clickQueue.addAll(subSteps)
+
+                  val launchIntent = Intent(baseAction).apply {
+                      flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                  }
+                  try {
+                      context.startActivity(launchIntent)
+                  } catch (e: Exception) {
+                      Toast.makeText(context, "Setting not supported on this device", Toast.LENGTH_SHORT).show()
+                  }
+              }
+
+              private fun pinBookmarkToHomeScreen(context: Context, bookmark: SettingBookmark) {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      val sm = context.getSystemService(ShortcutManager::class.java)
+                      if (sm != null && sm.isRequestPinShortcutSupported) {
+                          val shortcutIntent = Intent(context, MainActivity::class.java).apply {
+                              action = "com.example.settingsbookmarker.OPEN_BOOKMARK"
+                              putExtra("BASE_ACTION", bookmark.baseAction)
+                              putExtra("SUB_STEPS", bookmark.subSteps.joinToString("|"))
+                          }
+
+                          val info = ShortcutInfo.Builder(context, bookmark.id)
+                              .setShortLabel(bookmark.title)
+                              .setLongLabel("Open ${bookmark.title}")
+                              .setIcon(Icon.createWithResource(context, android.R.drawable.ic_menu_preferences))
+                              .setIntent(shortcutIntent)
+                              .build()
+
+                          val cb = sm.createShortcutResultIntent(info)
+                          val pending = PendingIntent.getBroadcast(context, 0, cb, PendingIntent.FLAG_IMMUTABLE)
+                          sm.requestPinShortcut(info, pending.intentSender)
                       }
                   }
               }
@@ -443,7 +440,7 @@ jobs:
           gradle-version: '8.6'
 
       - name: Build Debug APK
-        run: gradle assembleDebug
+        run: gradle assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
