@@ -1,4 +1,4 @@
-name: Auto-Generate and Build APK
+name: Build Banking-Safe Settings Bookmarker
 
 on:
   push:
@@ -16,10 +16,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Generate Project Files
+      - name: Generate Banking-Safe Project Files
         run: |
+          rm -rf app/src/main
           mkdir -p app/src/main/java/com/example/settingsbookmarker
-          mkdir -p app/src/main/res/xml
 
           cat << 'EOF' > gradle.properties
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
@@ -68,8 +68,8 @@ jobs:
                   applicationId = "com.example.settingsbookmarker"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 2
-                  versionName = "2.0"
+                  versionCode = 3
+                  versionName = "3.0-BankingSafe"
               }
 
               compileOptions {
@@ -90,8 +90,16 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+              <!-- ONLY standard shortcut and query permissions. ZERO Accessibility permissions! -->
               <uses-permission android:name="com.android.launcher.permission.INSTALL_SHORTCUT" />
-              <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+
+              <!-- Allows discovering all direct sub-settings screens built into your phone -->
+              <queries>
+                  <package android:name="com.android.settings" />
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                  </intent>
+              </queries>
 
               <application
                   android:allowBackup="true"
@@ -112,175 +120,8 @@ jobs:
                       </intent-filter>
                   </activity>
 
-                  <service
-                      android:name=".SettingsNavigatorService"
-                      android:exported="false"
-                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-                      <intent-filter>
-                          <action android:name="android.accessibilityservice.AccessibilityService" />
-                      </intent-filter>
-                      <meta-data
-                          android:name="android.accessibilityservice"
-                          android:resource="@xml/accessibility_service_config" />
-                  </service>
-
               </application>
           </manifest>
-          EOF
-
-          cat << 'EOF' > app/src/main/res/xml/accessibility_service_config.xml
-          <?xml version="1.0" encoding="utf-8"?>
-          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-              android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
-              android:accessibilityFeedbackType="feedbackGeneric"
-              android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagReportViewIds"
-              android:canPerformGestures="true"
-              android:canRetrieveWindowContent="true"
-              android:notificationTimeout="100" />
-          EOF
-
-          cat << 'EOF' > app/src/main/java/com/example/settingsbookmarker/SettingsNavigatorService.kt
-          package com.example.settingsbookmarker
-
-          import android.accessibilityservice.AccessibilityService
-          import android.os.Handler
-          import android.os.Looper
-          import android.view.accessibility.AccessibilityEvent
-          import android.view.accessibility.AccessibilityNodeInfo
-          import java.util.LinkedList
-          import java.util.Queue
-
-          class SettingsNavigatorService : AccessibilityService() {
-
-              companion object {
-                  val clickQueue: Queue<String> = LinkedList()
-                  var isProcessing = false
-                  var scrollAttempts = 0
-                  private val handler = Handler(Looper.getMainLooper())
-
-                  fun startNavigation(steps: List<String>) {
-                      handler.removeCallbacksAndMessages(null)
-                      clickQueue.clear()
-                      clickQueue.addAll(steps)
-                      scrollAttempts = 0
-                      isProcessing = false
-
-                      // Clear queue after 12 seconds so stale clicks never stay stuck
-                      handler.postDelayed({
-                          clickQueue.clear()
-                          isProcessing = false
-                      }, 12000)
-                  }
-              }
-
-              override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-                  if (clickQueue.isEmpty() || isProcessing) return
-
-                  val pkg = event?.packageName?.toString() ?: ""
-                  // Ignore events from our own app or launcher so we only click inside Settings
-                  if (pkg == "com.example.settingsbookmarker" || pkg.contains("launcher")) return
-
-                  isProcessing = true
-                  handler.postDelayed({
-                      processNextStep()
-                  }, 350)
-              }
-
-              private fun processNextStep() {
-                  if (clickQueue.isEmpty()) {
-                      isProcessing = false
-                      return
-                  }
-
-                  val rootNode = rootInActiveWindow
-                  if (rootNode == null) {
-                      isProcessing = false
-                      return
-                  }
-
-                  val targetText = clickQueue.peek()?.trim() ?: ""
-                  if (targetText.isEmpty()) {
-                      clickQueue.poll()
-                      isProcessing = false
-                      return
-                  }
-
-                  val matchedNode = findNodeByTextCaseInsensitive(rootNode, targetText)
-                  if (matchedNode != null) {
-                      val clickableParent = findClickableParent(matchedNode)
-                      if (clickableParent != null) {
-                          clickQueue.poll()
-                          scrollAttempts = 0
-                          clickableParent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                          // Wait briefly for the next sub-screen to open before looking for the next step
-                          handler.postDelayed({
-                              isProcessing = false
-                              if (clickQueue.isNotEmpty()) processNextStep()
-                          }, 550)
-                          return
-                      }
-                  }
-
-                  // If not visible on screen yet, scroll down up to 8 times
-                  if (scrollAttempts < 8) {
-                      scrollAttempts++
-                      scrollDown(rootNode)
-                      handler.postDelayed({
-                          isProcessing = false
-                          processNextStep()
-                      }, 450)
-                  } else {
-                      // Could not find target after scrolling
-                      clickQueue.clear()
-                      isProcessing = false
-                  }
-              }
-
-              private fun findNodeByTextCaseInsensitive(node: AccessibilityNodeInfo?, target: String): AccessibilityNodeInfo? {
-                  if (node == null) return null
-
-                  val nodeText = node.text?.toString() ?: ""
-                  val nodeDesc = node.contentDescription?.toString() ?: ""
-
-                  if (nodeText.equals(target, ignoreCase = true) ||
-                      nodeDesc.equals(target, ignoreCase = true) ||
-                      nodeText.contains(target, ignoreCase = true)) {
-                      return node
-                  }
-
-                  for (i in 0 until node.childCount) {
-                      val found = findNodeByTextCaseInsensitive(node.getChild(i), target)
-                      if (found != null) return found
-                  }
-                  return null
-              }
-
-              private fun findClickableParent(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-                  var current = node
-                  while (current != null) {
-                      if (current.isClickable) return current
-                      current = current.parent
-                  }
-                  return null
-              }
-
-              private fun scrollDown(node: AccessibilityNodeInfo?): Boolean {
-                  if (node == null) return false
-                  if (node.isScrollable) {
-                      node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-                      return true
-                  }
-                  for (i in 0 until node.childCount) {
-                      if (scrollDown(node.getChild(i))) return true
-                  }
-                  return false
-              }
-
-              override fun onInterrupt() {
-                  clickQueue.clear()
-                  isProcessing = false
-              }
-          }
           EOF
 
           cat << 'EOF' > app/src/main/java/com/example/settingsbookmarker/MainActivity.kt
@@ -288,8 +129,10 @@ jobs:
 
           import android.app.Activity
           import android.app.PendingIntent
+          import android.content.ComponentName
           import android.content.Context
           import android.content.Intent
+          import android.content.pm.PackageManager
           import android.content.pm.ShortcutInfo
           import android.content.pm.ShortcutManager
           import android.graphics.Color
@@ -298,57 +141,41 @@ jobs:
           import android.os.Build
           import android.os.Bundle
           import android.provider.Settings
-          import android.text.TextUtils
           import android.view.Gravity
           import android.widget.*
+
+          data class SettingTarget(
+              val label: String,
+              val actionOrComponent: String,
+              val isComponent: Boolean
+          )
 
           data class SettingBookmark(
               val id: String,
               val title: String,
-              val categoryLabel: String,
-              val baseAction: String,
-              val subSteps: List<String> = emptyList()
+              val targetLabel: String,
+              val actionOrComponent: String,
+              val isComponent: Boolean
           )
 
           class MainActivity : Activity() {
 
-              private val baseCategories = listOf(
-                  "Main Settings (Start from Top)" to Settings.ACTION_SETTINGS,
-                  "Display Settings" to Settings.ACTION_DISPLAY_SETTINGS,
-                  "Sound & Vibration" to Settings.ACTION_SOUND_SETTINGS,
-                  "Apps List (All Apps)" to Settings.ACTION_APPLICATION_SETTINGS,
-                  "Wi-Fi Settings" to Settings.ACTION_WIFI_SETTINGS,
-                  "Network & Internet / SIM" to Settings.ACTION_WIRELESS_SETTINGS,
-                  "Bluetooth Settings" to Settings.ACTION_BLUETOOTH_SETTINGS,
-                  "Connected Devices / Cast" to Settings.ACTION_CAST_SETTINGS,
-                  "Battery Saver / Battery" to Settings.ACTION_BATTERY_SAVER_SETTINGS,
-                  "Storage Settings" to Settings.ACTION_INTERNAL_STORAGE_SETTINGS,
-                  "Security & Lock Screen" to Settings.ACTION_SECURITY_SETTINGS,
-                  "Privacy Settings" to Settings.ACTION_PRIVACY_SETTINGS,
-                  "Location Settings" to Settings.ACTION_LOCATION_SOURCE_SETTINGS,
-                  "Accessibility Settings" to Settings.ACTION_ACCESSIBILITY_SETTINGS,
-                  "Developer Options" to Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS,
-                  "Date & Time" to Settings.ACTION_DATE_SETTINGS,
-                  "Language & Input" to Settings.ACTION_LOCALE_SETTINGS
-              )
-
+              private val availableTargets = mutableListOf<SettingTarget>()
               private val bookmarks = mutableListOf<SettingBookmark>()
               private lateinit var listContainer: LinearLayout
-              private lateinit var statusBanner: Button
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
 
                   if (intent?.action == "com.example.settingsbookmarker.OPEN_BOOKMARK") {
-                      val baseAction = intent.getStringExtra("BASE_ACTION") ?: Settings.ACTION_SETTINGS
-                      val stepsString = intent.getStringExtra("SUB_STEPS") ?: ""
-                      val steps = if (stepsString.isNotEmpty()) stepsString.split("|") else emptyList()
-
-                      executeBookmark(this, baseAction, steps)
+                      val target = intent.getStringExtra("TARGET") ?: Settings.ACTION_SETTINGS
+                      val isComp = intent.getBooleanExtra("IS_COMP", false)
+                      launchSetting(this, target, isComp)
                       finish()
                       return
                   }
 
+                  discoverAllSystemSettings()
                   loadBookmarks()
 
                   val scrollView = ScrollView(this)
@@ -358,15 +185,17 @@ jobs:
                   }
                   scrollView.addView(root)
 
-                  statusBanner = Button(this).apply {
-                      setOnClickListener {
-                          startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                      }
+                  val safeBanner = TextView(this).apply {
+                      text = "✓ Banking & UPI Safe Mode (Zero Accessibility Permissions)"
+                      setBackgroundColor(Color.parseColor("#D1F2D9"))
+                      setTextColor(Color.parseColor("#0A5C20"))
+                      setTypeface(null, Typeface.BOLD)
+                      setPadding(24, 24, 24, 24)
                   }
-                  root.addView(statusBanner)
+                  root.addView(safeBanner)
 
                   val sectionLabel = TextView(this).apply {
-                      text = "Create New Settings Bookmark"
+                      text = "Create Direct Settings Bookmark"
                       textSize = 18f
                       setTypeface(null, Typeface.BOLD)
                       setPadding(0, 24, 0, 12)
@@ -374,70 +203,43 @@ jobs:
                   root.addView(sectionLabel)
 
                   val titleInput = EditText(this).apply {
-                      hint = "1. Bookmark Name (e.g., Hotspot or Dark Theme)"
+                      hint = "1. Custom Bookmark Name (e.g., Hotspot, Night Light)"
                   }
                   root.addView(titleInput)
 
                   val spinnerLabel = TextView(this).apply {
-                      text = "2. Select Starting Settings Screen:"
+                      text = "2. Choose Deep System Setting Screen (${availableTargets.size} found on your phone):"
                       setPadding(0, 16, 0, 6)
                   }
                   root.addView(spinnerLabel)
 
-                  val categorySpinner = Spinner(this).apply {
+                  val targetSpinner = Spinner(this).apply {
                       adapter = ArrayAdapter(
                           this@MainActivity,
                           android.R.layout.simple_spinner_dropdown_item,
-                          baseCategories.map { it.first }
+                          availableTargets.map { it.label }
                       )
                   }
-                  root.addView(categorySpinner)
-
-                  val stepsInput = EditText(this).apply {
-                      hint = "3. Sub-options to auto-click (optional, comma-separated)"
-                  }
-                  root.addView(stepsInput)
-
-                  val helperText = TextView(this).apply {
-                      text = "Tip: Leave box #3 empty to just open the screen in #2 directly. Or enter exact menu words separated by commas (e.g., Hotspot & tethering, Wi-Fi hotspot) to auto-click deeper."
-                      textSize = 12f
-                      setTextColor(Color.DKGRAY)
-                      setPadding(0, 0, 0, 16)
-                  }
-                  root.addView(helperText)
+                  root.addView(targetSpinner)
 
                   val addBtn = Button(this).apply {
-                      text = "+ Save New Bookmark"
+                      text = "+ Save Direct Bookmark"
                       setOnClickListener {
-                          val t = titleInput.text.toString().trim()
-                          val s = stepsInput.text.toString().trim()
-                          val selectedIndex = categorySpinner.selectedItemPosition
-                          val selectedCategory = baseCategories[selectedIndex]
-
-                          if (t.isEmpty()) {
-                              Toast.makeText(this@MainActivity, "Please enter a Bookmark Name", Toast.LENGTH_SHORT).show()
-                              return@setOnClickListener
-                          }
-
-                          val parsedSteps = if (s.isNotEmpty()) {
-                              s.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                          } else {
-                              emptyList()
-                          }
+                          val chosen = availableTargets[targetSpinner.selectedItemPosition]
+                          val customTitle = titleInput.text.toString().trim().ifEmpty { chosen.label }
 
                           val newBm = SettingBookmark(
                               id = "bm_${System.currentTimeMillis()}",
-                              title = t,
-                              categoryLabel = selectedCategory.first,
-                              baseAction = selectedCategory.second,
-                              subSteps = parsedSteps
+                              title = customTitle,
+                              targetLabel = chosen.label,
+                              actionOrComponent = chosen.actionOrComponent,
+                              isComponent = chosen.isComponent
                           )
                           bookmarks.add(0, newBm)
                           saveAllBookmarks()
                           titleInput.setText("")
-                          stepsInput.setText("")
                           refreshList()
-                          Toast.makeText(this@MainActivity, "Bookmark Saved!", Toast.LENGTH_SHORT).show()
+                          Toast.makeText(this@MainActivity, "Bookmark Added!", Toast.LENGTH_SHORT).show()
                       }
                   }
                   root.addView(addBtn)
@@ -452,34 +254,94 @@ jobs:
                   setContentView(scrollView)
               }
 
-              override fun onResume() {
-                  super.onResume()
-                  if (::statusBanner.isInitialized) {
-                      val enabled = isAccessibilityServiceEnabled()
-                      if (enabled) {
-                          statusBanner.text = "✓ Deep Auto-Click Accessibility is ON"
-                          statusBanner.setBackgroundColor(Color.parseColor("#D1F2D9"))
-                      } else {
-                          statusBanner.text = "⚠️ Tap Here to Enable Accessibility (Required for Sub-Steps)"
-                          statusBanner.setBackgroundColor(Color.parseColor("#FFD6D6"))
+              private fun discoverAllSystemSettings() {
+                  // 1. Add standard Android Settings Deep Intents
+                  val standardActions = listOf(
+                      "Display Settings" to Settings.ACTION_DISPLAY_SETTINGS,
+                      "Night Light / Eye Comfort" to Settings.ACTION_NIGHT_DISPLAY_SETTINGS,
+                      "Auto-Rotate / Accessibility Display" to Settings.ACTION_ACCESSIBILITY_SETTINGS,
+                      "Sound & Vibration" to Settings.ACTION_SOUND_SETTINGS,
+                      "Do Not Disturb (DND) Rules" to Settings.ACTION_ZEN_MODE_PRIORITY_SETTINGS,
+                      "Wi-Fi Settings" to Settings.ACTION_WIFI_SETTINGS,
+                      "Wi-Fi IP / Saved Networks" to Settings.ACTION_WIFI_IP_SETTINGS,
+                      "Mobile Data & SIM / Roaming" to Settings.ACTION_DATA_ROAMING_SETTINGS,
+                      "Data Usage Summary" to Settings.ACTION_DATA_USAGE_SETTINGS,
+                      "Airplane / Wireless & Hotspot" to Settings.ACTION_WIRELESS_SETTINGS,
+                      "VPN Settings" to Settings.ACTION_VPN_SETTINGS,
+                      "Bluetooth Devices" to Settings.ACTION_BLUETOOTH_SETTINGS,
+                      "NFC & Contactless Payments" to Settings.ACTION_NFC_SETTINGS,
+                      "Cast / Screen Mirroring" to Settings.ACTION_CAST_SETTINGS,
+                      "Battery Saver" to Settings.ACTION_BATTERY_SAVER_SETTINGS,
+                      "Apps List (Manage All Apps)" to Settings.ACTION_APPLICATION_SETTINGS,
+                      "Default Apps (Browser, Phone, etc.)" to Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS,
+                      "Notification History & Access" to Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS,
+                      "Display Over Other Apps Permission" to Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                      "Modify System Settings Permission" to Settings.ACTION_MANAGE_WRITE_SETTINGS,
+                      "Install Unknown Apps Permission" to Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                      "Storage & Internal Space" to Settings.ACTION_INTERNAL_STORAGE_SETTINGS,
+                      "Security & Lock Screen" to Settings.ACTION_SECURITY_SETTINGS,
+                      "Biometrics / Fingerprint Enroll" to Settings.ACTION_BIOMETRIC_ENROLL,
+                      "Privacy Dashboard" to Settings.ACTION_PRIVACY_SETTINGS,
+                      "Location & GPS" to Settings.ACTION_LOCATION_SOURCE_SETTINGS,
+                      "Passwords & Autofill" to Settings.ACTION_REQUEST_SET_AUTOFILL_SERVICE,
+                      "Accounts & Sync" to Settings.ACTION_SYNC_SETTINGS,
+                      "Date & Time" to Settings.ACTION_DATE_SETTINGS,
+                      "Language & Region" to Settings.ACTION_LOCALE_SETTINGS,
+                      "Keyboards & Input Methods" to Settings.ACTION_INPUT_METHOD_SETTINGS,
+                      "Developer Options" to Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS,
+                      "Device Info / About Phone" to Settings.ACTION_DEVICE_INFO_SETTINGS
+                  )
+
+                  for ((label, action) in standardActions) {
+                      availableTargets.add(SettingTarget(label, action, false))
+                  }
+
+                  // 2. Scan the phone's built-in com.android.settings package for ALL exported deep sub-screens!
+                  try {
+                      val pkgInfo = packageManager.getPackageInfo(
+                          "com.android.settings",
+                          PackageManager.GET_ACTIVITIES
+                      )
+                      val activities = pkgInfo.activities ?: emptyArray()
+                      for (act in activities) {
+                          if (act.exported && (act.permission == null || act.permission.isEmpty())) {
+                              val rawLabel = act.loadLabel(packageManager)?.toString()?.trim() ?: ""
+                              val shortClass = act.name.substringAfterLast(".").substringAfterLast("$")
+                              val displayLabel = if (rawLabel.isNotEmpty() && rawLabel != "Settings") {
+                                  "Deep Screen: $rawLabel ($shortClass)"
+                              } else {
+                                  "Deep Screen: $shortClass"
+                              }
+                              availableTargets.add(
+                                  SettingTarget(
+                                      label = displayLabel,
+                                      actionOrComponent = "${act.packageName}/${act.name}",
+                                      isComponent = true
+                                  )
+                              )
+                          }
                       }
+                  } catch (_: Exception) {
                   }
               }
 
-              private fun isAccessibilityServiceEnabled(): Boolean {
-                  val expectedComponentName = "$packageName/${SettingsNavigatorService::class.java.canonicalName}"
-                  val enabledServices = Settings.Secure.getString(
-                      contentResolver,
-                      Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-                  ) ?: return false
-                  val splitter = TextUtils.SimpleStringSplitter(':')
-                  splitter.setString(enabledServices)
-                  while (splitter.hasNext()) {
-                      if (splitter.next().equals(expectedComponentName, ignoreCase = true)) {
-                          return true
+              private fun launchSetting(context: Context, target: String, isComponent: Boolean) {
+                  try {
+                      val launchIntent = if (isComponent) {
+                          val parts = target.split("/")
+                          Intent(Intent.ACTION_MAIN).apply {
+                              component = ComponentName(parts[0], parts[1])
+                              flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                          }
+                      } else {
+                          Intent(target).apply {
+                              flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                          }
                       }
+                      context.startActivity(launchIntent)
+                  } catch (e: Exception) {
+                      Toast.makeText(context, "This sub-screen cannot be opened directly on your phone model", Toast.LENGTH_SHORT).show()
                   }
-                  return false
               }
 
               private fun refreshList() {
@@ -505,21 +367,12 @@ jobs:
                       }
                       card.addView(titleView)
 
-                      val catView = TextView(this).apply {
-                          text = "Starts at: ${item.categoryLabel}"
+                      val subView = TextView(this).apply {
+                          text = item.targetLabel
                           textSize = 13f
                           setTextColor(Color.DKGRAY)
                       }
-                      card.addView(catView)
-
-                      if (item.subSteps.isNotEmpty()) {
-                          val subView = TextView(this).apply {
-                              text = "Auto-clicks: ${item.subSteps.joinToString(" -> ")}"
-                              textSize = 14f
-                              setTextColor(Color.parseColor("#0055AA"))
-                          }
-                          card.addView(subView)
-                      }
+                      card.addView(subView)
 
                       val btnRow = LinearLayout(this).apply {
                           orientation = LinearLayout.HORIZONTAL
@@ -529,7 +382,7 @@ jobs:
                       val openBtn = Button(this).apply {
                           text = "Open Now"
                           setOnClickListener {
-                              executeBookmark(this@MainActivity, item.baseAction, item.subSteps)
+                              launchSetting(this@MainActivity, item.actionOrComponent, item.isComponent)
                           }
                       }
                       btnRow.addView(openBtn)
@@ -558,60 +411,37 @@ jobs:
               }
 
               private fun saveAllBookmarks() {
-                  val prefs = getSharedPreferences("bookmarks_v2", Context.MODE_PRIVATE)
+                  val prefs = getSharedPreferences("bookmarks_v3_safe", Context.MODE_PRIVATE)
                   val serialized = bookmarks.joinToString("####") { bm ->
-                      "${bm.id};;${bm.title};;${bm.categoryLabel};;${bm.baseAction};;${bm.subSteps.joinToString("|")}"
+                      "${bm.id};;${bm.title};;${bm.targetLabel};;${bm.actionOrComponent};;${bm.isComponent}"
                   }
                   prefs.edit().putString("saved_list", serialized).apply()
               }
 
               private fun loadBookmarks() {
-                  val prefs = getSharedPreferences("bookmarks_v2", Context.MODE_PRIVATE)
+                  val prefs = getSharedPreferences("bookmarks_v3_safe", Context.MODE_PRIVATE)
                   val saved = prefs.getString("saved_list", null)
                   bookmarks.clear()
 
                   if (saved == null) {
                       bookmarks.addAll(
                           listOf(
-                              SettingBookmark("display_direct", "Display Settings", "Display Settings", Settings.ACTION_DISPLAY_SETTINGS),
-                              SettingBookmark("dev_options", "Developer Options", "Developer Options", Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
-                              SettingBookmark("battery_saver", "Battery Saver", "Battery Saver / Battery", Settings.ACTION_BATTERY_SAVER_SETTINGS),
-                              SettingBookmark("wifi_settings", "Wi-Fi Settings", "Wi-Fi Settings", Settings.ACTION_WIFI_SETTINGS)
+                              SettingBookmark("night_light", "Night Light / Eye Care", "Night Light / Eye Comfort", Settings.ACTION_NIGHT_DISPLAY_SETTINGS, false),
+                              SettingBookmark("display_direct", "Display Settings", "Display Settings", Settings.ACTION_DISPLAY_SETTINGS, false),
+                              SettingBookmark("dev_options", "Developer Options", "Developer Options", Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS, false),
+                              SettingBookmark("hotspot_wireless", "Hotspot & Network", "Airplane / Wireless & Hotspot", Settings.ACTION_WIRELESS_SETTINGS, false)
                           )
                       )
                       saveAllBookmarks()
                   } else if (saved.isNotEmpty()) {
-                      val entries = saved.split("####")
-                      for (entry in entries) {
+                      for (entry in saved.split("####")) {
                           val parts = entry.split(";;")
                           if (parts.size == 5) {
-                              val steps = if (parts[4].isNotEmpty()) parts[4].split("|") else emptyList()
-                              bookmarks.add(SettingBookmark(parts[0], parts[1], parts[2], parts[3], steps))
+                              bookmarks.add(
+                                  SettingBookmark(parts[0], parts[1], parts[2], parts[3], parts[4].toBoolean())
+                              )
                           }
                       }
-                  }
-              }
-
-              private fun executeBookmark(context: Context, baseAction: String, subSteps: List<String>) {
-                  if (subSteps.isNotEmpty() && !isAccessibilityServiceEnabled()) {
-                      Toast.makeText(
-                          context,
-                          "Please enable 'Settings Bookmarker' in Accessibility first so it can auto-click sub-steps!",
-                          Toast.LENGTH_LONG
-                      ).show()
-                      context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                      return
-                  }
-
-                  SettingsNavigatorService.startNavigation(subSteps)
-
-                  val launchIntent = Intent(baseAction).apply {
-                      flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-                  }
-                  try {
-                      context.startActivity(launchIntent)
-                  } catch (e: Exception) {
-                      Toast.makeText(context, "Setting not supported on this device", Toast.LENGTH_SHORT).show()
                   }
               }
 
@@ -621,8 +451,8 @@ jobs:
                       if (sm != null && sm.isRequestPinShortcutSupported) {
                           val shortcutIntent = Intent(context, MainActivity::class.java).apply {
                               action = "com.example.settingsbookmarker.OPEN_BOOKMARK"
-                              putExtra("BASE_ACTION", bookmark.baseAction)
-                              putExtra("SUB_STEPS", bookmark.subSteps.joinToString("|"))
+                              putExtra("TARGET", bookmark.actionOrComponent)
+                              putExtra("IS_COMP", bookmark.isComponent)
                           }
 
                           val info = ShortcutInfo.Builder(context, bookmark.id)
@@ -658,5 +488,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SettingsBookmarker-APK
+          name: SettingsBookmarker-BankingSafe-APK
           path: app/build/outputs/apk/debug/app-debug.apk
