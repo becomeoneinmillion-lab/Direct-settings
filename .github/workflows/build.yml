@@ -1,24 +1,18 @@
-name: Build Banking-Safe Settings Bookmarker
+name: Build Settings Bookmarker V4
 
 on:
   push:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Generate Banking-Safe Project Files
+      - name: Create Clean Project From Scratch
         run: |
-          rm -rf app/src/main
+          rm -rf *
           mkdir -p app/src/main/java/com/example/settingsbookmarker
 
           cat << 'EOF' > gradle.properties
@@ -43,7 +37,7 @@ jobs:
                   mavenCentral()
               }
           }
-          rootProject.name = "SettingsBookmarker"
+          rootProject.name = "SettingsBookmarkerV4"
           include(":app")
           EOF
 
@@ -65,11 +59,11 @@ jobs:
               compileSdk = 34
 
               defaultConfig {
-                  applicationId = "com.example.settingsbookmarker"
+                  applicationId = "com.example.settingsbookmarker.v4"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 3
-                  versionName = "3.0-BankingSafe"
+                  versionCode = 4
+                  versionName = "4.0"
               }
 
               compileOptions {
@@ -90,20 +84,15 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-              <!-- ONLY standard shortcut and query permissions. ZERO Accessibility permissions! -->
               <uses-permission android:name="com.android.launcher.permission.INSTALL_SHORTCUT" />
 
-              <!-- Allows discovering all direct sub-settings screens built into your phone -->
               <queries>
                   <package android:name="com.android.settings" />
-                  <intent>
-                      <action android:name="android.intent.action.MAIN" />
-                  </intent>
               </queries>
 
               <application
-                  android:allowBackup="true"
-                  android:label="Settings Bookmarker"
+                  android:allowBackup="false"
+                  android:label="Settings Bookmarker V4"
                   android:supportsRtl="true"
                   android:theme="@android:style/Theme.DeviceDefault.Light.DarkActionBar">
 
@@ -115,8 +104,10 @@ jobs:
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
                       <intent-filter>
-                          <action android:name="com.example.settingsbookmarker.OPEN_BOOKMARK" />
+                          <action android:name="android.intent.action.VIEW" />
                           <category android:name="android.intent.category.DEFAULT" />
+                          <category android:name="android.intent.category.BROWSABLE" />
+                          <data android:scheme="settingsbm" />
                       </intent-filter>
                   </activity>
 
@@ -138,24 +129,24 @@ jobs:
           import android.graphics.Color
           import android.graphics.Typeface
           import android.graphics.drawable.Icon
+          import android.net.Uri
           import android.os.Build
           import android.os.Bundle
           import android.provider.Settings
           import android.view.Gravity
+          import android.view.View
           import android.widget.*
 
           data class SettingTarget(
               val label: String,
-              val actionOrComponent: String,
-              val isComponent: Boolean
+              val targetUri: String
           )
 
           data class SettingBookmark(
               val id: String,
               val title: String,
               val targetLabel: String,
-              val actionOrComponent: String,
-              val isComponent: Boolean
+              val targetUri: String
           )
 
           class MainActivity : Activity() {
@@ -163,19 +154,22 @@ jobs:
               private val availableTargets = mutableListOf<SettingTarget>()
               private val bookmarks = mutableListOf<SettingBookmark>()
               private lateinit var listContainer: LinearLayout
+              private var selectedTargetIndex = 0
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
 
-                  if (intent?.action == "com.example.settingsbookmarker.OPEN_BOOKMARK") {
-                      val target = intent.getStringExtra("TARGET") ?: Settings.ACTION_SETTINGS
-                      val isComp = intent.getBooleanExtra("IS_COMP", false)
-                      launchSetting(this, target, isComp)
+                  // Handle Home Screen Shortcut clicks via unique URI data (never cached/lost)
+                  if (intent?.action == Intent.ACTION_VIEW && intent?.data?.scheme == "settingsbm") {
+                      val encodedTarget = intent.data?.getQueryParameter("target") ?: ""
+                      if (encodedTarget.isNotEmpty()) {
+                          launchSettingByUri(this, encodedTarget)
+                      }
                       finish()
                       return
                   }
 
-                  discoverAllSystemSettings()
+                  discoverSystemSettings()
                   loadBookmarks()
 
                   val scrollView = ScrollView(this)
@@ -186,7 +180,7 @@ jobs:
                   scrollView.addView(root)
 
                   val safeBanner = TextView(this).apply {
-                      text = "✓ Banking & UPI Safe Mode (Zero Accessibility Permissions)"
+                      text = "✓ V4 Direct Launcher (Banking/UPI Safe - No Accessibility)"
                       setBackgroundColor(Color.parseColor("#D1F2D9"))
                       setTextColor(Color.parseColor("#0A5C20"))
                       setTypeface(null, Typeface.BOLD)
@@ -194,24 +188,38 @@ jobs:
                   }
                   root.addView(safeBanner)
 
+                  // Quick 1-Tap Preset Button specifically for Apps -> App Manager
+                  val quickAppMgrBtn = Button(this).apply {
+                      text = "⚡ Open Apps -> App Manager Now"
+                      setBackgroundColor(Color.parseColor("#0055AA"))
+                      setTextColor(Color.WHITE)
+                      setOnClickListener {
+                          openAppManagerDirectly(this@MainActivity)
+                      }
+                  }
+                  val quickParams = LinearLayout.LayoutParams(
+                      LinearLayout.LayoutParams.MATCH_PARENT,
+                      LinearLayout.LayoutParams.WRAP_CONTENT
+                  ).apply { setMargins(0, 24, 0, 12) }
+                  root.addView(quickAppMgrBtn, quickParams)
+
                   val sectionLabel = TextView(this).apply {
-                      text = "Create Direct Settings Bookmark"
+                      text = "Add New Settings Bookmark"
                       textSize = 18f
                       setTypeface(null, Typeface.BOLD)
                       setPadding(0, 24, 0, 12)
                   }
                   root.addView(sectionLabel)
 
-                  val titleInput = EditText(this).apply {
-                      hint = "1. Custom Bookmark Name (e.g., Hotspot, Night Light)"
-                  }
-                  root.addView(titleInput)
-
                   val spinnerLabel = TextView(this).apply {
-                      text = "2. Choose Deep System Setting Screen (${availableTargets.size} found on your phone):"
-                      setPadding(0, 16, 0, 6)
+                      text = "1. Select Setting Screen (${availableTargets.size} available):"
+                      setPadding(0, 8, 0, 6)
                   }
                   root.addView(spinnerLabel)
+
+                  val titleInput = EditText(this).apply {
+                      hint = "2. Custom Name (Optional)"
+                  }
 
                   val targetSpinner = Spinner(this).apply {
                       adapter = ArrayAdapter(
@@ -219,27 +227,34 @@ jobs:
                           android.R.layout.simple_spinner_dropdown_item,
                           availableTargets.map { it.label }
                       )
+                      onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                          override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                              selectedTargetIndex = position
+                              titleInput.hint = "2. Custom Name (Default: ${availableTargets[position].label})"
+                          }
+                          override fun onNothingSelected(parent: AdapterView<*>?) {}
+                      }
                   }
                   root.addView(targetSpinner)
+                  root.addView(titleInput)
 
                   val addBtn = Button(this).apply {
-                      text = "+ Save Direct Bookmark"
+                      text = "+ Save Bookmark to List"
                       setOnClickListener {
-                          val chosen = availableTargets[targetSpinner.selectedItemPosition]
+                          val chosen = availableTargets[selectedTargetIndex]
                           val customTitle = titleInput.text.toString().trim().ifEmpty { chosen.label }
 
                           val newBm = SettingBookmark(
                               id = "bm_${System.currentTimeMillis()}",
                               title = customTitle,
                               targetLabel = chosen.label,
-                              actionOrComponent = chosen.actionOrComponent,
-                              isComponent = chosen.isComponent
+                              targetUri = chosen.targetUri
                           )
                           bookmarks.add(0, newBm)
                           saveAllBookmarks()
                           titleInput.setText("")
                           refreshList()
-                          Toast.makeText(this@MainActivity, "Bookmark Added!", Toast.LENGTH_SHORT).show()
+                          Toast.makeText(this@MainActivity, "Added: $customTitle", Toast.LENGTH_SHORT).show()
                       }
                   }
                   root.addView(addBtn)
@@ -254,49 +269,45 @@ jobs:
                   setContentView(scrollView)
               }
 
-              private fun discoverAllSystemSettings() {
-                  // 1. Add standard Android Settings Deep Intents
+              private fun discoverSystemSettings() {
+                  // Put Apps -> App Manager right at #1
                   val standardActions = listOf(
-                      "Display Settings" to Settings.ACTION_DISPLAY_SETTINGS,
-                      "Night Light / Eye Comfort" to Settings.ACTION_NIGHT_DISPLAY_SETTINGS,
-                      "Auto-Rotate / Accessibility Display" to Settings.ACTION_ACCESSIBILITY_SETTINGS,
-                      "Sound & Vibration" to Settings.ACTION_SOUND_SETTINGS,
-                      "Do Not Disturb (DND) Rules" to Settings.ACTION_ZEN_MODE_PRIORITY_SETTINGS,
-                      "Wi-Fi Settings" to Settings.ACTION_WIFI_SETTINGS,
-                      "Wi-Fi IP / Saved Networks" to Settings.ACTION_WIFI_IP_SETTINGS,
-                      "Mobile Data & SIM / Roaming" to Settings.ACTION_DATA_ROAMING_SETTINGS,
-                      "Data Usage Summary" to Settings.ACTION_DATA_USAGE_SETTINGS,
-                      "Airplane / Wireless & Hotspot" to Settings.ACTION_WIRELESS_SETTINGS,
-                      "VPN Settings" to Settings.ACTION_VPN_SETTINGS,
-                      "Bluetooth Devices" to Settings.ACTION_BLUETOOTH_SETTINGS,
-                      "NFC & Contactless Payments" to Settings.ACTION_NFC_SETTINGS,
-                      "Cast / Screen Mirroring" to Settings.ACTION_CAST_SETTINGS,
-                      "Battery Saver" to Settings.ACTION_BATTERY_SAVER_SETTINGS,
-                      "Apps List (Manage All Apps)" to Settings.ACTION_APPLICATION_SETTINGS,
-                      "Default Apps (Browser, Phone, etc.)" to Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS,
-                      "Notification History & Access" to Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS,
-                      "Display Over Other Apps Permission" to Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                      "Modify System Settings Permission" to Settings.ACTION_MANAGE_WRITE_SETTINGS,
-                      "Install Unknown Apps Permission" to Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                      "Storage & Internal Space" to Settings.ACTION_INTERNAL_STORAGE_SETTINGS,
-                      "Security & Lock Screen" to Settings.ACTION_SECURITY_SETTINGS,
-                      "Biometrics / Fingerprint Enroll" to Settings.ACTION_BIOMETRIC_ENROLL,
-                      "Privacy Dashboard" to Settings.ACTION_PRIVACY_SETTINGS,
-                      "Location & GPS" to Settings.ACTION_LOCATION_SOURCE_SETTINGS,
-                      "Passwords & Autofill" to Settings.ACTION_REQUEST_SET_AUTOFILL_SERVICE,
-                      "Accounts & Sync" to Settings.ACTION_SYNC_SETTINGS,
-                      "Date & Time" to Settings.ACTION_DATE_SETTINGS,
-                      "Language & Region" to Settings.ACTION_LOCALE_SETTINGS,
-                      "Keyboards & Input Methods" to Settings.ACTION_INPUT_METHOD_SETTINGS,
-                      "Developer Options" to Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS,
-                      "Device Info / About Phone" to Settings.ACTION_DEVICE_INFO_SETTINGS
+                      "Apps -> App Manager (Manage All Apps)" to "action:${Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS}",
+                      "Apps -> App Settings List" to "action:${Settings.ACTION_APPLICATION_SETTINGS}",
+                      "Apps -> Default Apps (Browser, Phone)" to "action:${Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS}",
+                      "Apps -> Usage Access" to "action:${Settings.ACTION_USAGE_ACCESS_SETTINGS}",
+                      "Apps -> Overlay (Appear on Top)" to "action:${Settings.ACTION_MANAGE_OVERLAY_PERMISSION}",
+                      "Apps -> Modify System Settings" to "action:${Settings.ACTION_MANAGE_WRITE_SETTINGS}",
+                      "Apps -> Notification Access" to "action:${Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS}",
+                      "Wi-Fi Settings" to "action:${Settings.ACTION_WIFI_SETTINGS}",
+                      "Hotspot & Wireless Settings" to "action:${Settings.ACTION_WIRELESS_SETTINGS}",
+                      "Mobile Data / SIM Roaming" to "action:${Settings.ACTION_DATA_ROAMING_SETTINGS}",
+                      "Data Usage" to "action:${Settings.ACTION_DATA_USAGE_SETTINGS}",
+                      "Bluetooth Settings" to "action:${Settings.ACTION_BLUETOOTH_SETTINGS}",
+                      "Connected Devices / Cast" to "action:${Settings.ACTION_CAST_SETTINGS}",
+                      "VPN Settings" to "action:${Settings.ACTION_VPN_SETTINGS}",
+                      "Sound & Vibration" to "action:${Settings.ACTION_SOUND_SETTINGS}",
+                      "Do Not Disturb (DND)" to "action:${Settings.ACTION_ZEN_MODE_PRIORITY_SETTINGS}",
+                      "Display Settings" to "action:${Settings.ACTION_DISPLAY_SETTINGS}",
+                      "Night Light / Eye Comfort" to "action:${Settings.ACTION_NIGHT_DISPLAY_SETTINGS}",
+                      "Battery Saver" to "action:${Settings.ACTION_BATTERY_SAVER_SETTINGS}",
+                      "Storage Space" to "action:${Settings.ACTION_INTERNAL_STORAGE_SETTINGS}",
+                      "Security & Screen Lock" to "action:${Settings.ACTION_SECURITY_SETTINGS}",
+                      "Privacy Settings" to "action:${Settings.ACTION_PRIVACY_SETTINGS}",
+                      "Location / GPS" to "action:${Settings.ACTION_LOCATION_SOURCE_SETTINGS}",
+                      "Developer Options" to "action:${Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS}",
+                      "Accessibility Settings" to "action:${Settings.ACTION_ACCESSIBILITY_SETTINGS}",
+                      "Date & Time" to "action:${Settings.ACTION_DATE_SETTINGS}",
+                      "Language & Input" to "action:${Settings.ACTION_LOCALE_SETTINGS}",
+                      "Keyboards" to "action:${Settings.ACTION_INPUT_METHOD_SETTINGS}",
+                      "About Phone" to "action:${Settings.ACTION_DEVICE_INFO_SETTINGS}"
                   )
 
-                  for ((label, action) in standardActions) {
-                      availableTargets.add(SettingTarget(label, action, false))
+                  for ((label, uri) in standardActions) {
+                      availableTargets.add(SettingTarget(label, uri))
                   }
 
-                  // 2. Scan the phone's built-in com.android.settings package for ALL exported deep sub-screens!
+                  // Also scan device-specific exported activities (Xiaomi/Samsung/Realme/Vivo App Manager etc.)
                   try {
                       val pkgInfo = packageManager.getPackageInfo(
                           "com.android.settings",
@@ -308,15 +319,14 @@ jobs:
                               val rawLabel = act.loadLabel(packageManager)?.toString()?.trim() ?: ""
                               val shortClass = act.name.substringAfterLast(".").substringAfterLast("$")
                               val displayLabel = if (rawLabel.isNotEmpty() && rawLabel != "Settings") {
-                                  "Deep Screen: $rawLabel ($shortClass)"
+                                  "Deep: $rawLabel ($shortClass)"
                               } else {
-                                  "Deep Screen: $shortClass"
+                                  "Deep: $shortClass"
                               }
                               availableTargets.add(
                                   SettingTarget(
                                       label = displayLabel,
-                                      actionOrComponent = "${act.packageName}/${act.name}",
-                                      isComponent = true
+                                      targetUri = "comp:${act.packageName}/${act.name}"
                                   )
                               )
                           }
@@ -325,22 +335,50 @@ jobs:
                   }
               }
 
-              private fun launchSetting(context: Context, target: String, isComponent: Boolean) {
+              private fun openAppManagerDirectly(context: Context) {
+                  // Try MANAGE_ALL_APPLICATIONS_SETTINGS first (goes directly into App Manager list skipping the intermediate Apps screen)
                   try {
-                      val launchIntent = if (isComponent) {
-                          val parts = target.split("/")
+                      val intent = Intent(Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS).apply {
+                          flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                      }
+                      context.startActivity(intent)
+                      return
+                  } catch (_: Exception) {}
+
+                  // Fallback to ACTION_APPLICATION_SETTINGS
+                  try {
+                      val intent = Intent(Settings.ACTION_APPLICATION_SETTINGS).apply {
+                          flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                      }
+                      context.startActivity(intent)
+                  } catch (e: Exception) {
+                      Toast.makeText(context, "Could not open App Manager", Toast.LENGTH_SHORT).show()
+                  }
+              }
+
+              private fun launchSettingByUri(context: Context, targetUri: String) {
+                  if (targetUri == "action:${Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS}") {
+                      openAppManagerDirectly(context)
+                      return
+                  }
+
+                  try {
+                      val launchIntent = if (targetUri.startsWith("comp:")) {
+                          val compStr = targetUri.removePrefix("comp:")
+                          val parts = compStr.split("/")
                           Intent(Intent.ACTION_MAIN).apply {
                               component = ComponentName(parts[0], parts[1])
                               flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                           }
                       } else {
-                          Intent(target).apply {
+                          val actionStr = targetUri.removePrefix("action:")
+                          Intent(actionStr).apply {
                               flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                           }
                       }
                       context.startActivity(launchIntent)
                   } catch (e: Exception) {
-                      Toast.makeText(context, "This sub-screen cannot be opened directly on your phone model", Toast.LENGTH_SHORT).show()
+                      Toast.makeText(context, "Cannot open this screen directly on your phone", Toast.LENGTH_SHORT).show()
                   }
               }
 
@@ -368,7 +406,7 @@ jobs:
                       card.addView(titleView)
 
                       val subView = TextView(this).apply {
-                          text = item.targetLabel
+                          text = "Target: ${item.targetLabel}"
                           textSize = 13f
                           setTextColor(Color.DKGRAY)
                       }
@@ -382,7 +420,7 @@ jobs:
                       val openBtn = Button(this).apply {
                           text = "Open Now"
                           setOnClickListener {
-                              launchSetting(this@MainActivity, item.actionOrComponent, item.isComponent)
+                              launchSettingByUri(this@MainActivity, item.targetUri)
                           }
                       }
                       btnRow.addView(openBtn)
@@ -411,35 +449,53 @@ jobs:
               }
 
               private fun saveAllBookmarks() {
-                  val prefs = getSharedPreferences("bookmarks_v3_safe", Context.MODE_PRIVATE)
+                  val prefs = getSharedPreferences("bm_v4_store", Context.MODE_PRIVATE)
                   val serialized = bookmarks.joinToString("####") { bm ->
-                      "${bm.id};;${bm.title};;${bm.targetLabel};;${bm.actionOrComponent};;${bm.isComponent}"
+                      "${bm.id};;${bm.title};;${bm.targetLabel};;${bm.targetUri}"
                   }
                   prefs.edit().putString("saved_list", serialized).apply()
               }
 
               private fun loadBookmarks() {
-                  val prefs = getSharedPreferences("bookmarks_v3_safe", Context.MODE_PRIVATE)
+                  val prefs = getSharedPreferences("bm_v4_store", Context.MODE_PRIVATE)
                   val saved = prefs.getString("saved_list", null)
                   bookmarks.clear()
 
                   if (saved == null) {
                       bookmarks.addAll(
                           listOf(
-                              SettingBookmark("night_light", "Night Light / Eye Care", "Night Light / Eye Comfort", Settings.ACTION_NIGHT_DISPLAY_SETTINGS, false),
-                              SettingBookmark("display_direct", "Display Settings", "Display Settings", Settings.ACTION_DISPLAY_SETTINGS, false),
-                              SettingBookmark("dev_options", "Developer Options", "Developer Options", Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS, false),
-                              SettingBookmark("hotspot_wireless", "Hotspot & Network", "Airplane / Wireless & Hotspot", Settings.ACTION_WIRELESS_SETTINGS, false)
+                              SettingBookmark(
+                                  "app_mgr",
+                                  "App Manager (All Apps)",
+                                  "Apps -> App Manager (Manage All Apps)",
+                                  "action:${Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS}"
+                              ),
+                              SettingBookmark(
+                                  "default_apps",
+                                  "Default Apps",
+                                  "Apps -> Default Apps (Browser, Phone)",
+                                  "action:${Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS}"
+                              ),
+                              SettingBookmark(
+                                  "dev_options",
+                                  "Developer Options",
+                                  "Developer Options",
+                                  "action:${Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS}"
+                              ),
+                              SettingBookmark(
+                                  "wifi_settings",
+                                  "Wi-Fi Settings",
+                                  "Wi-Fi Settings",
+                                  "action:${Settings.ACTION_WIFI_SETTINGS}"
+                              )
                           )
                       )
                       saveAllBookmarks()
                   } else if (saved.isNotEmpty()) {
                       for (entry in saved.split("####")) {
                           val parts = entry.split(";;")
-                          if (parts.size == 5) {
-                              bookmarks.add(
-                                  SettingBookmark(parts[0], parts[1], parts[2], parts[3], parts[4].toBoolean())
-                              )
+                          if (parts.size == 4) {
+                              bookmarks.add(SettingBookmark(parts[0], parts[1], parts[2], parts[3]))
                           }
                       }
                   }
@@ -449,13 +505,11 @@ jobs:
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                       val sm = context.getSystemService(ShortcutManager::class.java)
                       if (sm != null && sm.isRequestPinShortcutSupported) {
-                          val shortcutIntent = Intent(context, MainActivity::class.java).apply {
-                              action = "com.example.settingsbookmarker.OPEN_BOOKMARK"
-                              putExtra("TARGET", bookmark.actionOrComponent)
-                              putExtra("IS_COMP", bookmark.isComponent)
-                          }
+                          // Using a unique URI in data guarantees Android never merges or overwrites shortcuts!
+                          val uniqueUri = Uri.parse("settingsbm://open/${bookmark.id}?target=${Uri.encode(bookmark.targetUri)}")
+                          val shortcutIntent = Intent(Intent.ACTION_VIEW, uniqueUri, context, MainActivity::class.java)
 
-                          val info = ShortcutInfo.Builder(context, bookmark.id)
+                          val info = ShortcutInfo.Builder(context, "${bookmark.id}_${System.currentTimeMillis()}")
                               .setShortLabel(bookmark.title)
                               .setLongLabel("Open ${bookmark.title}")
                               .setIcon(Icon.createWithResource(context, android.R.drawable.ic_menu_preferences))
@@ -463,7 +517,12 @@ jobs:
                               .build()
 
                           val cb = sm.createShortcutResultIntent(info)
-                          val pending = PendingIntent.getBroadcast(context, 0, cb, PendingIntent.FLAG_IMMUTABLE)
+                          val pending = PendingIntent.getBroadcast(
+                              context,
+                              System.currentTimeMillis().toInt(),
+                              cb,
+                              PendingIntent.FLAG_IMMUTABLE
+                          )
                           sm.requestPinShortcut(info, pending.intentSender)
                       }
                   }
@@ -488,5 +547,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SettingsBookmarker-BankingSafe-APK
+          name: SettingsBookmarker-V4-APK
           path: app/build/outputs/apk/debug/app-debug.apk
